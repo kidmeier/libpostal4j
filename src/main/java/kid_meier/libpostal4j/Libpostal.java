@@ -17,6 +17,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import kid_meier.libpostal4j.ffi.libpostal_address_parser_response;
@@ -92,45 +93,77 @@ public class Libpostal implements AutoCloseable {
 		this.bufferPool = new BufferPool(arena);
 	}
 
-	public static Libpostal initialize(String dataPath) {
-		return initialize(Runnable::run, dataPath);
+	public static class Options {
+
+		public static final String DEFAULT_DATADIR = "/usr/local/share/libpostal";
+
+		private Supplier<Arena> arenaFactory;
+		private Executor initExecutor;
+		private String dataDir;
+
+		public Options() {
+			this.arenaFactory = Arena::ofConfined;
+			this.initExecutor = Runnable::run;
+			this.dataDir = DEFAULT_DATADIR;
+		}
+
+		public Options withArena(Arena arena) {
+			requireNonNull(arena);
+			return withArenaFactory(() -> arena);
+		}
+
+		public Options withArenaFactory(Supplier<Arena> arenaFactory) {
+			this.arenaFactory = requireNonNull(arenaFactory);
+			return this;
+		}
+
+		public Options withInitExecutor(Executor executor) {
+			this.initExecutor = requireNonNull(executor);
+			return this;
+		}
+
+		public Options withDatadir(String dataDir) {
+			this.dataDir = dataDir;
+			return this;
+		}
+
 	}
 
-	public static Libpostal initialize(Executor executor, String dataPath) {
+	public static Libpostal initialize() {
+		return initialize(new Options());
+	}
+
+	public static Libpostal initialize(Options options) {
 		synchronized (LOADED) {
 			if (LOADED.compareAndSet(false, true)) {
-				Arena arena = initializeLibrary(executor, dataPath);
+				Arena arena = initializeLibrary(options);
 				return new Libpostal(arena);
 			}
-			throw new IllegalStateException("The singleton has already been initialized");
+			throw new IllegalStateException("This class is a singleton and has already been initialized by another caller");
 		}
 	}
 
-	private static Arena initializeLibrary(Executor executor, String dataPath) {
+	private static Arena initializeLibrary(Options options) {
 		try (Arena local = Arena.ofConfined()) {
-			MemorySegment datadir = local.allocateFrom(dataPath);
-			if (!libpostal_setup_datadir(datadir)) {
-				throw new RuntimeException("libpostal_setup_datadir(\"%s\")".formatted(dataPath));
+			MemorySegment datadirCString = local.allocateFrom(options.dataDir);
+			if (!libpostal_setup_datadir(datadirCString)) {
+				throw new RuntimeException("libpostal_setup_datadir(\"%s\")".formatted(options.dataDir));
 			}
-			if (!libpostal_setup_parser_datadir(datadir)) {
-				throw new RuntimeException("libpostal_setup_paser_datadir(\"%s\")".formatted(dataPath));
+			if (!libpostal_setup_parser_datadir(datadirCString)) {
+				throw new RuntimeException("libpostal_setup_paser_datadir(\"%s\")".formatted(options.dataDir));
 			}
-			if (!libpostal_setup_language_classifier_datadir(datadir)) {
-				throw new RuntimeException("libpostal_setup_language_classifier_datadir(\"%s\")".formatted(dataPath));
+			if (!libpostal_setup_language_classifier_datadir(datadirCString)) {
+				throw new RuntimeException("libpostal_setup_language_classifier_datadir(\"%s\")".formatted(options.dataDir));
 			}
 		}
+		Supplier<Arena> arenaFactory = options.arenaFactory;
 		CompletableFuture<Arena> arenaFuture = new CompletableFuture<>();
-		executor.execute(() -> {
+		options.initExecutor.execute(() -> {
 			try {
-				Arena arena = Arena.ofConfined();
+				Arena arena = arenaFactory.get();
 				DEFAULT_EXPAND_OPTIONS_STRUCT = libpostal_get_default_options(arena);
 				DEFAULT_PARSE_OPTIONS_STRUCT = libpostal_get_address_parser_default_options(arena);
 				DEFAULT_NEAR_DUPE_OPTIONS_STRUCT = libpostal_get_near_dupe_hash_default_options(arena);
-				// Zenith is not really interested in the default near-dupe options where name is
-				// required; disable names, and enable address_only_keys
-				libpostal_near_dupe_hash_options.with_name(DEFAULT_NEAR_DUPE_OPTIONS_STRUCT, false);
-				libpostal_near_dupe_hash_options.name_and_address_keys(DEFAULT_NEAR_DUPE_OPTIONS_STRUCT, false);
-				libpostal_near_dupe_hash_options.address_only_keys(DEFAULT_NEAR_DUPE_OPTIONS_STRUCT, true);
 				DEFAULT_DUPLICATE_OPTIONS_STRUCT = libpostal_get_default_duplicate_options(arena);
 				DEFAULT_FUZZY_DUPLICATE_OPTIONS_STRUCT = libpostal_get_default_fuzzy_duplicate_options(arena);
 				arenaFuture.complete(arena);
@@ -602,6 +635,24 @@ public class Libpostal implements AutoCloseable {
 
 		public static NearDupeHashOptions of(EnumSet<NearDupeHashFlag> flags) {
 			return new NearDupeHashOptions(flags, 0d, 0d, DEFAULT_GEO_PRECISION);
+		}
+
+		public NearDupeHashOptions enable(NearDupeHashFlag flag) {
+			Set<NearDupeHashFlag> flags = EnumSet.copyOf(this.flags);
+			if (flags.add(flag)) {
+				return new NearDupeHashOptions(flags, this.lat, this.lon, this.geoPrecision);
+			} else {
+				return this;
+			}
+		}
+
+		public NearDupeHashOptions disable(NearDupeHashFlag flag) {
+			Set<NearDupeHashFlag> flags = EnumSet.copyOf(this.flags);
+			if (flags.remove(flag)) {
+				return new NearDupeHashOptions(flags, this.lat, this.lon, this.geoPrecision);
+			} else {
+				return this;
+			}
 		}
 
 	}

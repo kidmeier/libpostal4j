@@ -28,7 +28,7 @@ class LibpostalTest {
 
 	@BeforeAll
 	static void initialize() {
-		fixture = Libpostal.initialize("/usr/local/share/libpostal");
+		fixture = Libpostal.initialize();
 	}
 
 	@AfterAll
@@ -149,7 +149,12 @@ class LibpostalTest {
 					Component.of(Label.CITY, "new york"),
 					Component.of(Label.STATE, "ny"),
 					Component.of(Label.POSTCODE, "10169"),
-					Component.of(Label.COUNTRY, "usa"))));
+					Component.of(Label.COUNTRY, "usa")),
+				Libpostal.NearDupeHashOptions.DEFAULT
+					.enable(Libpostal.NearDupeHashFlag.ADDRESS_ONLY_KEYS)
+					.disable(Libpostal.NearDupeHashFlag.NAME_AND_ADDRESS_KEYS)
+					.disable(Libpostal.NearDupeHashFlag.WITH_NAME)
+			));
 		assertEquals(
 			List.of(
 				"act|park avenue|230|new york",
